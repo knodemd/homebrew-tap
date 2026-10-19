@@ -4,8 +4,9 @@
 Usage:
     scripts/bump.py --version 0.2.0 --sums SHA256SUMS [--formula Formula/knode.rb] [--cask Casks/knode.rb]
 
-Each `sha256` takes the checksum of the asset its `url` points at, with `#{version}` replaced by
-the new version. The formula's archives must all be in SHA256SUMS. When the release has no
+The formula has no `version` line: Homebrew reads the version from its URLs, so the version in
+each `url` is replaced. The cask has a `version` line and builds its `url` from `#{version}`.
+Each `sha256` takes the checksum of the asset its `url` points at. The formula's archives must all be in SHA256SUMS. When the release has no
 `Knode-<version>.dmg`, the cask is left as it is and a warning is printed.
 
 Standard library only, so it runs on any runner with Python 3.
@@ -23,6 +24,7 @@ VERSION_LINE = re.compile(r'^(\s*version\s+)"[^"]*"', re.MULTILINE)
 URL_LINE = re.compile(r'^\s*url\s+"([^"]+)"')
 SHA_LINE = re.compile(r'^(\s*sha256\s+)"[^"]*"')
 HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+URL_VERSION = re.compile(r"/releases/download/v(\d+\.\d+\.\d+)/")
 
 
 class BumpError(Exception):
@@ -57,14 +59,27 @@ def set_version(text: str, version: str, path: str) -> str:
     return new
 
 
+def set_url_version(line: str, url: str, version: str) -> tuple[str, str]:
+    """Replace the version written into a release `url` (the tag and the file name)."""
+    m = URL_VERSION.search(url)
+    if not m:
+        return line, url
+    new_url = url.replace(m.group(1), version)
+    return line.replace(url, new_url), new_url
+
+
 def bump_formula(text: str, version: str, sums: dict[str, str], path: str = "formula") -> str:
     """In the formula every `sha256` follows the `url` it belongs to."""
-    lines = set_version(text, version, path).splitlines(keepends=True)
+    if VERSION_LINE.search(text):
+        text = set_version(text, version, path)
+    lines = text.splitlines(keepends=True)
     url = None
     changed = 0
     for i, line in enumerate(lines):
         if m := URL_LINE.match(line):
-            url = m.group(1)
+            lines[i], url = set_url_version(line, m.group(1), version)
+            if "#{version}" not in url and version not in url:
+                raise BumpError(f"{path}:{i + 1}: cannot find the version in {url}")
             continue
         if m := SHA_LINE.match(line):
             if url is None:

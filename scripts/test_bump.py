@@ -61,7 +61,8 @@ class BumpTest(unittest.TestCase):
         code, _, sums = self.run_bump()
         self.assertEqual(code, 0)
         formula = self.formula.read_text()
-        self.assertIn(f'version "{VERSION}"', formula)
+        self.assertNotIn("0.1.0", formula)
+        self.assertEqual(formula.count(f"/download/v{VERSION}/knode-v{VERSION}-"), 4)
         for target in ["aarch64-apple-darwin", "x86_64-apple-darwin",
                        "aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]:
             sha = sums[f"knode-v{VERSION}-{target}.tar.gz"]
@@ -79,8 +80,8 @@ class BumpTest(unittest.TestCase):
         self.run_bump()
         after = self.formula.read_text().splitlines()
         changed = [b for b, a in zip(before, after) if b != a]
-        self.assertEqual(len(changed), 5)
-        self.assertTrue(all("version" in line or "sha256" in line for line in changed))
+        self.assertEqual(len(changed), 8)
+        self.assertTrue(all("url" in line or "sha256" in line for line in changed))
 
     def test_twice_is_the_same(self):
         self.run_bump()
@@ -94,7 +95,7 @@ class BumpTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertIn("::warning::", out)
         self.assertEqual(self.cask.read_text(), before)
-        self.assertIn(f'version "{VERSION}"', self.formula.read_text())
+        self.assertIn(f"/download/v{VERSION}/", self.formula.read_text())
 
     def test_missing_archive_fails_and_writes_nothing(self):
         before = self.formula.read_text()
@@ -105,6 +106,17 @@ class BumpTest(unittest.TestCase):
                               "--formula", str(self.formula), "--cask", str(self.cask)])
         self.assertEqual(code, 1)
         self.assertEqual(self.formula.read_text(), before)
+
+    def test_formula_with_a_version_line(self):
+        formula = (
+            'class Knode < Formula\n  version "0.1.0"\n'
+            '  url "https://example.com/v#{version}/knode-v#{version}-x86_64-apple-darwin.tar.gz"\n'
+            '  sha256 "' + "0" * 64 + '"\nend\n'
+        )
+        _, sums = fake_sums()
+        out = bump.bump_formula(formula, VERSION, sums)
+        self.assertIn(f'version "{VERSION}"', out)
+        self.assertIn(sums[f"knode-v{VERSION}-x86_64-apple-darwin.tar.gz"], out)
 
     def test_prerelease_is_refused(self):
         code, out, _ = self.run_bump(version="0.2.0-rc.1")
