@@ -1,0 +1,92 @@
+name: tests
+
+# Checks the formula and the cask the way Homebrew will use them: `brew style`,
+# `brew audit`, then installs and tests them on macOS and Linux. Runs on pull requests
+# and from the bump workflow, before its pull request is opened.
+
+on:
+  pull_request:
+  workflow_call:
+    inputs:
+      artifact:
+        description: Name of an artifact with the changed Formula/ and Casks/ files to test
+        required: false
+        type: string
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  script:
+    name: Bump script
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Unit tests
+        run: python3 -m unittest discover -s scripts -v
+
+  brew:
+    name: Homebrew (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-26, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
+    env:
+      HOMEBREW_NO_INSTALL_FROM_API: "1"
+      HOMEBREW_NO_AUTO_UPDATE: "1"
+    steps:
+      # Checks out this repository as the knodemd/tap tap.
+      - id: brew
+        uses: Homebrew/actions/setup-homebrew@eb02c69dbabdb66ff183c614f4ce7ab3c077592c # 2026.10.12.1
+
+      - name: Use the files to test
+        if: inputs.artifact != ''
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: ${{ inputs.artifact }}
+          path: ${{ github.workspace }}
+
+      - name: Style
+        run: brew style Formula/knode.rb Casks/knode.rb
+
+      # The files are templates (zeros for every checksum) until the first release.
+      - id: released
+        name: Released files
+        run: |
+          for kind in formula cask; do
+            file="Formula/knode.rb"; [ "$kind" = cask ] && file="Casks/knode.rb"
+            if grep -q 'sha256 "0\{64\}"' "$file"; then
+              echo "::notice::$file is still the template, it is audited offline and not installed"
+              echo "$kind=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "$kind=true" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+      # --online also checks that every URL can be downloaded, which needs a release.
+      - name: Audit the formula
+        env:
+          ONLINE: ${{ steps.released.outputs.formula == 'true' && '1' || '' }}
+        run: brew audit --strict ${ONLINE:+--online} --formula knodemd/tap/knode
+
+      - name: Audit the cask
+        if: runner.os == 'macOS'
+        env:
+          ONLINE: ${{ steps.released.outputs.cask == 'true' && '1' || '' }}
+        run: brew audit --strict ${ONLINE:+--online} --cask knodemd/tap/knode
+
+      - name: Install and test the formula
+        if: steps.released.outputs.formula == 'true'
+        run: |
+          brew install --formula knodemd/tap/knode
+          brew test knodemd/tap/knode
+          knode --version
+
+      - name: Install the cask
+        if: runner.os == 'macOS' && steps.released.outputs.cask == 'true'
+        run: |
+          brew install --cask knodemd/tap/knode
+          test -d /Applications/Knode.app
+          brew uninstall --cask knodemd/tap/knode
