@@ -1,0 +1,215 @@
+name: bump
+
+# Sets `version` and every `sha256` in Formula/knode.rb and Casks/knode.rb from the
+# SHA256SUMS of a published knodemd/knode release, tests the result and opens a pull
+# request. It never pushes to main.
+#
+# knodemd/knode sends the `knode-release` dispatch when a release is published; it can
+# also be run by hand from the Actions tab. The release process is in the handbook:
+# https://github.com/knodemd/handbook/blob/main/07-releasing.md
+
+on:
+  repository_dispatch:
+    types: [knode-release]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Version of the knodemd/knode release, X.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bump-${{ github.event.client_payload.version || inputs.version }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_REPO: knodemd/knode
+
+jobs:
+  bump:
+    name: Rewrite the formula and the cask
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      branch: ${{ steps.version.outputs.branch }}
+      changed: ${{ steps.rewrite.outputs.changed }}
+      cask: ${{ steps.rewrite.outputs.cask }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # Passed through the environment, never pasted into the script.
+      INPUT_VERSION: ${{ github.event.client_payload.version || inputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - id: version
+        name: Check the version and the release
+        run: |
+          version="${INPUT_VERSION#v}"
+          if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.-]+$ ]]; then
+            echo "::notice::$version is a pre-release, Homebrew does not offer pre-releases"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::Version '$INPUT_VERSION' is not X.Y.Z"
+            exit 1
+          fi
+          # Drafts are not visible here, so a draft fails like a missing release.
+          if ! state="$(gh release view "v$version" --repo "$SOURCE_REPO" --json isDraft,isPrerelease \
+                --jq 'if .isDraft then "draft" elif .isPrerelease then "prerelease" else "published" end')"; then
+            echo "::error::No published release v$version in $SOURCE_REPO (drafts must be published first)"
+            exit 1
+          fi
+          if [ "$state" != "published" ]; then
+            echo "::error::Release v$version in $SOURCE_REPO is a $state"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "branch=bump/knode-$version" >> "$GITHUB_OUTPUT"
+
+      - name: Download SHA256SUMS
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release download "v$VERSION" --repo "$SOURCE_REPO" --pattern SHA256SUMS \
+            --dir "$RUNNER_TEMP/release"
+          cat "$RUNNER_TEMP/release/SHA256SUMS"
+
+      - name: Unit tests of the bump script
+        if: steps.version.outputs.version != ''
+        run: python3 -m unittest discover -s scripts
+
+      - id: rewrite
+        name: Rewrite the version and the checksums
+        if: steps.version.outputs.version != ''
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          BRANCH: ${{ steps.version.outputs.branch }}
+        run: |
+          python3 scripts/bump.py --version "$VERSION" --sums "$RUNNER_TEMP/release/SHA256SUMS"
+          git diff --stat
+          if git diff --quiet; then
+            echo "::notice::The tap is already at $VERSION, nothing to do"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          open="$(gh pr list --repo "$GITHUB_REPOSITORY" --head "$BRANCH" --state open --json url --jq '.[0].url')"
+          if [ -n "$open" ]; then
+            echo "::notice::$open already bumps the tap to $VERSION"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git diff --quiet -- Casks/knode.rb; then
+            echo "cask=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "cask=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: steps.rewrite.outputs.changed == 'true'
+        with:
+          name: bumped
+          path: |
+            Formula/knode.rb
+            Casks/knode.rb
+          if-no-files-found: error
+
+  tests:
+    name: Test
+    needs: bump
+    if: needs.bump.outputs.changed == 'true'
+    uses: ./.github/workflows/tests.yml
+    with:
+      artifact: bumped
+
+  pull-request:
+    name: Open the pull request
+    needs: [bump, tests]
+    if: needs.bump.outputs.changed == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.bump.outputs.version }}
+      BRANCH: ${{ needs.bump.outputs.branch }}
+      CASK: ${{ needs.bump.outputs.cask }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bumped
+          path: ${{ github.workspace }}
+
+      # The commit is made through the GitHub API, so it is signed by GitHub and no Git
+      # identity is configured on the runner.
+      - name: Commit to a new branch
+        run: |
+          base="$(git rev-parse HEAD)"
+          if gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$BRANCH" > /dev/null 2>&1; then
+            echo "::error::Branch $BRANCH already exists without an open pull request; delete it and run again"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/git/refs" -f ref="refs/heads/$BRANCH" -f sha="$base" > /dev/null
+          headline="chore: update knode to $VERSION"
+          jq -n \
+            --arg repo "$GITHUB_REPOSITORY" --arg branch "$BRANCH" --arg base "$base" \
+            --arg headline "$headline" \
+            --arg formula "$(base64 -w0 Formula/knode.rb)" --arg cask "$(base64 -w0 Casks/knode.rb)" \
+            --argjson withcask "$CASK" '
+            {
+              query: "mutation($input: CreateCommitOnBranchInput!) { createCommitOnBranch(input: $input) { commit { oid } } }",
+              variables: { input: {
+                branch: { repositoryNameWithOwner: $repo, branchName: $branch },
+                expectedHeadOid: $base,
+                message: { headline: $headline },
+                fileChanges: { additions: (
+                  [{ path: "Formula/knode.rb", contents: $formula }]
+                  + (if $withcask then [{ path: "Casks/knode.rb", contents: $cask }] else [] end)
+                ) }
+              } }
+            }' > "$RUNNER_TEMP/commit.json"
+          gh api graphql --input "$RUNNER_TEMP/commit.json" --jq '.data.createCommitOnBranch.commit.oid'
+
+      - name: Open the pull request
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          release="https://github.com/$SOURCE_REPO/releases/tag/v$VERSION"
+          if [ "$CASK" = "true" ]; then
+            what="the formula and the cask"
+            cask_line="- \`Casks/knode.rb\`: \`version\` and \`sha256\` of \`Knode-$VERSION.dmg\`"
+            cask_test="- [ ] \`brew reinstall --cask knode\` opens the app without a warning"
+          else
+            what="the formula"
+            cask_line="- \`Casks/knode.rb\` is unchanged: the release has no \`Knode-$VERSION.dmg\`"
+            cask_test=""
+          fi
+          cat > "$RUNNER_TEMP/body.md" <<BODY
+          ## Why
+
+          [Knode $VERSION]($release) is published, so $what should install it.
+
+          ## What changed
+
+          - \`Formula/knode.rb\`: \`version\` and the \`sha256\` of every archive, from the release's \`SHA256SUMS\`
+          $cask_line
+
+          ## Test plan
+
+          - [x] \`brew style\` and \`brew audit --strict --online\` pass ([run]($RUN_URL))
+          - [x] \`brew install\` and \`brew test\` pass on macOS and Linux ([run]($RUN_URL))
+          - [ ] On a Mac: \`brew reinstall knode && brew test knode\`
+          $cask_test
+
+          Release: $release
+          BODY
+          gh pr create --repo "$GITHUB_REPOSITORY" --base main --head "$BRANCH" \
+            --title "chore: update knode to $VERSION" --body-file "$RUNNER_TEMP/body.md"
