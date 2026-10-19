@@ -51,13 +51,6 @@ jobs:
       - name: Style
         run: brew style Formula/knode.rb Casks/knode.rb
 
-      - name: Audit the formula
-        run: brew audit --strict --online --formula knodemd/tap/knode
-
-      - name: Audit the cask
-        if: runner.os == 'macOS'
-        run: brew audit --strict --online --cask knodemd/tap/knode
-
       # The files are templates (zeros for every checksum) until the first release.
       - id: released
         name: Released files
@@ -65,12 +58,24 @@ jobs:
           for kind in formula cask; do
             file="Formula/knode.rb"; [ "$kind" = cask ] && file="Casks/knode.rb"
             if grep -q 'sha256 "0\{64\}"' "$file"; then
-              echo "::notice::$file is still the template, it is not installed"
+              echo "::notice::$file is still the template, it is audited offline and not installed"
               echo "$kind=false" >> "$GITHUB_OUTPUT"
             else
               echo "$kind=true" >> "$GITHUB_OUTPUT"
             fi
           done
+
+      # --online also checks that every URL can be downloaded, which needs a release.
+      - name: Audit the formula
+        env:
+          ONLINE: ${{ steps.released.outputs.formula == 'true' && '1' || '' }}
+        run: brew audit --strict ${ONLINE:+--online} --formula knodemd/tap/knode
+
+      - name: Audit the cask
+        if: runner.os == 'macOS'
+        env:
+          ONLINE: ${{ steps.released.outputs.cask == 'true' && '1' || '' }}
+        run: brew audit --strict ${ONLINE:+--online} --cask knodemd/tap/knode
 
       - name: Install and test the formula
         if: steps.released.outputs.formula == 'true'
