@@ -26,6 +26,15 @@ cask "knode" do
 
   app "Knode.app"
 
+  # The app's own settings and caches. Spaces are .knode files the user saved, never removed.
+  zap trash: [
+    "~/Library/Application Support/Knode",
+    "~/Library/Caches/md.knode.Knode",
+    "~/Library/HTTPStorages/md.knode.Knode",
+    "~/Library/Preferences/md.knode.Knode.plist",
+    "~/Library/Saved Application State/md.knode.Knode.savedState",
+  ]
+
   caveats <<~EOS
     To use Knode from the terminal and from your agents, let the app install the `knode`
     command, or install it with Homebrew:
