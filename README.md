@@ -57,7 +57,7 @@ Both point at the archives attached to each
 
 1. When a release of `knodemd/knode` is published, it sends a `knode-release` event to this
    repository with the version.
-2. The `bump` workflow downloads the release's `SHA256SUMS` and sets `version` and every `sha256`
+2. The `bump` workflow downloads the release's `SHA256SUMS` and sets the version and every `sha256`
    in the formula and the cask with `scripts/bump.py`. A release without a `.dmg` leaves the cask
    as it is. Pre-releases are skipped.
 3. It runs `brew style` and `brew audit`, installs and tests the formula on macOS and Linux and
