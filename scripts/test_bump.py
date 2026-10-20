@@ -20,6 +20,9 @@ TARGETS = [
     "universal-apple-darwin",
     "aarch64-unknown-linux-gnu",
     "x86_64-unknown-linux-gnu",
+    # Releases also carry static musl builds, which the formula never uses.
+    "aarch64-unknown-linux-musl",
+    "x86_64-unknown-linux-musl",
 ]
 
 
@@ -117,6 +120,16 @@ class BumpTest(unittest.TestCase):
         out = bump.bump_formula(formula, VERSION, sums)
         self.assertIn(f'version "{VERSION}"', out)
         self.assertIn(sums[f"knode-v{VERSION}-x86_64-apple-darwin.tar.gz"], out)
+
+    def test_musl_archives_are_ignored(self):
+        code, _, sums = self.run_bump()
+        self.assertEqual(code, 0)
+        formula = self.formula.read_text()
+        self.assertNotIn("-musl.tar.gz", formula)
+        for target in ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]:
+            self.assertNotIn(sums[f"knode-v{VERSION}-{target}.tar.gz"], formula)
+        for target in ["aarch64-unknown-linux-gnu", "x86_64-unknown-linux-gnu"]:
+            self.assertIn(sums[f"knode-v{VERSION}-{target}.tar.gz"], formula)
 
     def test_prerelease_is_refused(self):
         code, out, _ = self.run_bump(version="0.2.0-rc.1")
