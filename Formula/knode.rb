@@ -25,6 +25,8 @@ class Knode < Formula
     end
   end
 
+  # Homebrew on Linux runs on glibc, so the formula uses the gnu builds. The static musl
+  # builds in the same release are for Alpine and older glibc, through install.sh.
   on_linux do
     on_arm do
       url "https://github.com/knodemd/knode/releases/download/v0.1.0/knode-v0.1.0-aarch64-unknown-linux-gnu.tar.gz"
