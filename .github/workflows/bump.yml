@@ -87,7 +87,7 @@ jobs:
               "$RUNNER_TEMP/release/SHA256SUMS" || missing="$missing $asset"
           done
           if [ -n "$missing" ]; then
-            echo "::error::Release v$VERSION in $SOURCE_REPO has no Mac builds (missing:$missing), so the tap is not bumped. Add the Mac builds to that release first (re-run its release workflow with the Mac signing secrets), then run this workflow again."
+            echo "::error::Release v$VERSION in $SOURCE_REPO has no Mac builds (missing:$missing), so the tap is not bumped. A release workflow re-run does not change a published release: turn it back into a draft (gh release edit v$VERSION --repo $SOURCE_REPO --draft=true), re-run the failed jobs of its release workflow run with the Mac signing secrets set, and publish it again, which dispatches this workflow; or release a new patch version."
             exit 1
           fi
 
