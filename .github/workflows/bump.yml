@@ -78,6 +78,18 @@ jobs:
           gh release download "v$VERSION" --repo "$SOURCE_REPO" --pattern SHA256SUMS \
             --dir "$RUNNER_TEMP/release"
           cat "$RUNNER_TEMP/release/SHA256SUMS"
+          # A Linux-only draft ("Linux only, do not publish") that was published anyway has no
+          # Mac archives, and the formula needs them: stop with a clear error before bumping.
+          missing=""
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            asset="knode-v${VERSION}-${target}.tar.gz"
+            awk -v f="$asset" '{ n = $2; sub(/^\*/, "", n) } n == f { found = 1 } END { exit !found }' \
+              "$RUNNER_TEMP/release/SHA256SUMS" || missing="$missing $asset"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::Release v$VERSION in $SOURCE_REPO has no Mac builds (missing:$missing), so the tap is not bumped. Add the Mac builds to that release first (re-run its release workflow with the Mac signing secrets), then run this workflow again."
+            exit 1
+          fi
 
       - name: Unit tests of the bump script
         if: steps.version.outputs.version != ''
